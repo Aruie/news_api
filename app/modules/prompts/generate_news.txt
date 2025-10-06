@@ -9,9 +9,8 @@ Translate the content into English and summarize it in the style of a profession
 Write the result so that it:
 - Reads naturally as a native English news report
 - Uses clear paragraph separation with **two line breaks between paragraphs**
-- Places the image (if any) at the top of the article with a caption below it in this exact format:
-  <img src="{{image_url}}" alt="article image"/>
-  <caption>Image source: {{image_url}}</caption>
+
+Do NOT include any <img> or <caption> tags — the system will handle that automatically.
 
 Output your final result strictly in the following XML structure:
 

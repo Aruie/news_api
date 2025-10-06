@@ -19,9 +19,10 @@ def run_scraper():
     """
     ✅ 실시간 모니터링형 자동 수집기
     - SourceMetaTable 기준으로 각 수집처 1회 스캔
+    - 목록 selector / 본문 selector 둘 다 테이블에서 지정
     - 이미 등록된 URL은 제외
     - 신규 기사만 ArticleTable에 저장
-    - 페이징 없음 (한 페이지 모니터링)
+    - 페이징 없음
     """
     try:
         res = source_table.scan()
@@ -37,15 +38,16 @@ def run_scraper():
         for src in sources:
             src_id = src["sourceId"]
             src_name = src["srcName"]
-            url = src["sourceUrl"]
-            selector = src.get("selectorContainer", "div.news-list")
-            tag = src.get("selectorItem", "a")
+            base_url = src["sourceUrl"]
+            selector_container = src.get("selectorContainer")
+            selector_item = src.get("selectorItem", "a")
+            selector_content = src.get("contentSelector")
             category = src.get("category", "General")
 
-            print(f"🕷️ {src_name} ({src_id}) → {url}")
+            print(f"🕷️ {src_name} ({src_id}) → {base_url}")
 
             try:
-                links = extract_links(url, selector, tag)
+                links = extract_links(base_url, selector_container, selector_item)
             except Exception as e:
                 print(f"⚠️ [{src_name}] 링크 추출 실패: {e}")
                 total_failed += 1
@@ -58,24 +60,24 @@ def run_scraper():
             for link in links:
                 # URL 정규화
                 if link.startswith("/"):
-                    full_url = url.rstrip("/") + link
+                    full_url = base_url.rstrip("/") + link
                 elif link.startswith("http"):
                     full_url = link
                 else:
-                    full_url = f"{url.rstrip('/')}/{link}"
+                    full_url = f"{base_url.rstrip('/')}/{link}"
 
                 # 중복 확인
                 exists = article_table.scan(
                     FilterExpression="articleUrl = :u",
                     ExpressionAttributeValues={":u": full_url}
                 )
-
                 if exists.get("Items"):
                     skip_count += 1
                     continue
 
                 try:
-                    data = get_contents(full_url)
+                    # ✅ 본문 selector를 동적으로 전달
+                    data = get_contents(full_url, selector_content)
                     html = data.get("html", "")
                     imgs = data.get("images", [])
                     image_url = imgs[0]["src"] if imgs else None
@@ -91,6 +93,7 @@ def run_scraper():
                             "imageUrl": image_url,
                             "date": datetime.utcnow().isoformat(),
                             "category": category,
+                            "contentSelector": selector_content,  # ✅ 실제 적용된 selector 기록
                         }
                     )
 

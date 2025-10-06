@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException
 import boto3
-from datetime import datetime
 import uuid
 import requests
+import re
 from app.modules.bedrock import call_bedrock_api, parse_bedrock_output
-from app.modules.prompt_loader import load_prompt
+from app.modules.prompt_loader import load_prompt  # ✅ 프롬프트 로더 import
+from datetime import datetime
 
 router = APIRouter(prefix="/articles", tags=["Articles"])
 
@@ -24,66 +25,87 @@ TARGET_BUCKET = "sayart-news-thumbnails"
 def generate_news_from_article(article_id: str):
     """기사 기반으로 뉴스 생성 + 이미지 S3 업로드 후 본문 삽입"""
     try:
-        # 1️⃣ 원본 기사 조회
         res = article_table.get_item(Key={"articleId": article_id})
         if "Item" not in res:
             raise HTTPException(status_code=404, detail="Article not found")
         article = res["Item"]
 
-        # 2️⃣ category 확인
+        # 이미 생성된 뉴스가 있으면 중복 방지
+        if article.get("generatedNewsId"):
+            return {"message": "Already generated", "newsId": article["generatedNewsId"]}
+
         category = article.get("category")
         if not category:
-            raise HTTPException(
-                status_code=400,
-                detail="해당 기사에는 category 정보가 없습니다. (News 생성 불가)"
-            )
+            raise HTTPException(status_code=400, detail="Missing category info")
 
-        # 3️⃣ 이미지가 존재하면 S3 업로드
+        # ✅ 이미지 업로드
         image_url = article.get("imageUrl")
         uploaded_s3_url = None
-
         if image_url:
             try:
                 image_data = requests.get(image_url).content
                 image_key = f"news_thumbs/{article_id}_{uuid.uuid4().hex[:8]}.jpg"
                 s3.put_object(
-                    Bucket=TARGET_BUCKET, 
-                    Key=image_key, 
-                    Body=image_data, 
+                    Bucket=TARGET_BUCKET,
+                    Key=image_key,
+                    Body=image_data,
                     ContentType="image/jpeg",
-                    ),
+                )
                 uploaded_s3_url = f"https://{TARGET_BUCKET}.s3.amazonaws.com/{image_key}"
             except Exception as e:
                 print(f"⚠️ 이미지 업로드 실패: {e}")
-                uploaded_s3_url = None
 
-        # Load prompt template
-        prompt_template = load_prompt("news_en_prompt")
+        # ✅ Bedrock 프롬프트 불러오기 (외부 텍스트 파일 기반)
+        try:
+            template = load_prompt("generate_news")  # app/modules/prompts/generate_news.txt
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Prompt load failed: {e}")
 
-        # Replace placeholders
+        # ✅ 템플릿 변수 치환
         prompt = (
-            prompt_template
+            template
             .replace("{{content}}", article.get("content", ""))
-            .replace("{{image_url}}", article.get("imageUrl") or "")
+            .replace("{{image_url}}", uploaded_s3_url or image_url or "")
+            .replace("{{article_url}}", article.get("articleUrl", ""))
         )
 
-        # Bedrock 호출
+        # ✅ Bedrock 호출
         result = call_bedrock_api(prompt=prompt, model_name="haiku-3.5")
-
         text = result["content"][0]["text"] if "content" in result else str(result)
         title, description = parse_bedrock_output(text)
+        
+        
 
         if not title or not description:
-            raise HTTPException(
-                status_code=500,
-                detail="모델 출력 파싱 실패 — <Title> 또는 <Article> 태그가 누락되었습니다."
+            raise HTTPException(status_code=500, detail="Bedrock output parsing failed")
+        
+        description = re.sub(r'\n{2,}', '</p><p>', description.strip())
+        description = f"<p>{description}</p>"
+
+        # ✅ 이미지 캡션 - 실제 URL 사용
+        # if uploaded_s3_url:
+        #     source_link = article.get("articleUrl") or article.get("sourceUrl") or ""
+        #     description = (
+        #         f'<img src="{uploaded_s3_url}" alt="news image" class="article-image"/>'
+        #         f'<p style="text-align:center;color:#666;font-size:0.85rem;">'
+        #         f'Image courtesy of <a href="{source_link}" target="_blank" rel="noreferrer">{source_link}</a>'
+        #         f'</p>\n\n{description}'
+        #     )
+        if uploaded_s3_url:
+            article_name = article.get("srcName") or article.get("sourceId") or "Source"
+            article_url = article.get("articleUrl") or article.get("sourceUrl") or ""
+
+            description = (
+                f'<img src="{uploaded_s3_url}" alt="news image" class="article-image"/>'
+                f'<p style="text-align:center;color:#666;font-size:0.85rem;">'
+                f'Image courtesy of {article_name} '
+                f'<a href="{article_url}" target="_blank" rel="noreferrer" '
+                f'style="text-decoration:none;">🔗</a>'
+                f'</p>\n\n{description}'
             )
 
-        # 5️⃣ 이미지가 있으면 본문에 <img> 태그 추가
-        if uploaded_s3_url:
-            description = f'<img src="{uploaded_s3_url}" alt="기사 이미지" class="article-image"/>\n\n{description}'
 
-        # 6️⃣ 새 뉴스 저장
+        # ✅ 새 뉴스 생성
         new_id = str(uuid.uuid4())[:8]
         now = datetime.utcnow().isoformat()
 
@@ -96,20 +118,25 @@ def generate_news_from_article(article_id: str):
                 "category": category,
                 "pubDate": now,
                 "author": "System",
-                "imageUrl": uploaded_s3_url,  # ✅ 썸네일 URL 별도 저장
+                "imageUrl": uploaded_s3_url,
             }
         )
 
+        # ✅ ArticleTable에 generatedNewsId 업데이트
+        article_table.update_item(
+            Key={"articleId": article_id},
+            UpdateExpression="SET generatedNewsId = :nid",
+            ExpressionAttributeValues={":nid": new_id},
+        )
+
         return {
+            "message": "Generated successfully",
             "id": new_id,
             "title": title,
             "description": description,
             "category": category,
             "imageUrl": uploaded_s3_url,
-            "createdAt": now,
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
