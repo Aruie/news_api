@@ -3,7 +3,8 @@ import boto3
 from datetime import datetime
 import uuid
 import requests
-from modules.bedrock import call_bedrock_api, parse_bedrock_output
+from app.modules.bedrock import call_bedrock_api, parse_bedrock_output
+from app.modules.prompt_loader import load_prompt
 
 router = APIRouter(prefix="/articles", tags=["Articles"])
 
@@ -45,31 +46,30 @@ def generate_news_from_article(article_id: str):
             try:
                 image_data = requests.get(image_url).content
                 image_key = f"news_thumbs/{article_id}_{uuid.uuid4().hex[:8]}.jpg"
-                s3.put_object(Bucket=TARGET_BUCKET, Key=image_key, Body=image_data, ContentType="image/jpeg",ACL="public-read"),
+                s3.put_object(
+                    Bucket=TARGET_BUCKET, 
+                    Key=image_key, 
+                    Body=image_data, 
+                    ContentType="image/jpeg",
+                    ),
                 uploaded_s3_url = f"https://{TARGET_BUCKET}.s3.amazonaws.com/{image_key}"
             except Exception as e:
                 print(f"⚠️ 이미지 업로드 실패: {e}")
                 uploaded_s3_url = None
 
-        # 4️⃣ Bedrock 호출 (XML 구조)
-        prompt = f"""
-        다음은 뉴스 기사 원문입니다.
+        # Load prompt template
+        prompt_template = load_prompt("news_en_prompt")
 
-        -------------------------
-        {article.get('content')}
-        -------------------------
+        # Replace placeholders
+        prompt = (
+            prompt_template
+            .replace("{{content}}", article.get("content", ""))
+            .replace("{{image_url}}", article.get("imageUrl") or "")
+        )
 
-        이 기사를 바탕으로 한국어 뉴스 기사 형식으로 요약하되,
-        아래의 XML 포맷을 반드시 그대로 사용해 출력하세요.
-
-        <Title>뉴스 제목</Title>
-        <Article>본문 내용 (300~500자)</Article>
-
-        ⚠️ 절대 불필요한 문장이나 설명을 추가하지 말고,
-        반드시 <Title>과 <Article> 두 개의 태그만 출력하세요.
-        """
-
+        # Bedrock 호출
         result = call_bedrock_api(prompt=prompt, model_name="haiku-3.5")
+
         text = result["content"][0]["text"] if "content" in result else str(result)
         title, description = parse_bedrock_output(text)
 

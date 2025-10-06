@@ -77,7 +77,7 @@ def insert_sample_data():
         "sourceId": "ENT-0001",
         "srcName": "SM 뉴스룸",
         "srcDescription": "SM엔터테인먼트 공식 뉴스 게시판",
-        "url": "https://www.smentertainment.com/newsroom/",
+        "sourceUrl": "https://www.smentertainment.com/newsroom/",
         "selectorContainer": "div.news-list",
         "selectorItem": "a",
         "category": "Entertainment",
@@ -87,7 +87,7 @@ def insert_sample_data():
     article_item = {
         "articleId": "ENT-0001-251002-001",
         "sourceId": "ENT-0001",
-        "url": "https://www.smentertainment.com/newsroom/view/12345",
+        "articleUrl": "https://www.smentertainment.com/newsroom/view/12345",
         "title": "NCT NEW ALBUM 발표",
         "content": "SM엔터테인먼트는 오늘 NCT의 새 앨범 출시를 발표했다...",
         "imageUrl": "https://s3.ap-northeast-2.amazonaws.com/my-bucket/images/nct_album.jpg",

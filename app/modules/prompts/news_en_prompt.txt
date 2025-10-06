@@ -1,0 +1,25 @@
+Below is the original news article (may be written in Korean).
+
+-------------------------
+{{content}}
+-------------------------
+
+Translate the content into English and summarize it in the style of a professional news article.
+
+Write the result so that it:
+- Reads naturally as a native English news report
+- Uses clear paragraph separation with **two line breaks between paragraphs**
+- Places the image (if any) at the top of the article with a caption below it in this exact format:
+  <img src="{{image_url}}" alt="article image"/>
+  <caption>Image source: {{image_url}}</caption>
+
+Output your final result strictly in the following XML structure:
+
+<Title>English headline</Title>
+
+<Article>
+[Main article body — written in English, with paragraph breaks using two line spaces]
+</Article>
+
+Do NOT include explanations or commentary.
+Output ONLY the two XML tags <Title> and <Article>.

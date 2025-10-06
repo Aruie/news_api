@@ -5,13 +5,15 @@ from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 # 모듈 import
-from modules.bedrock import call_bedrock_api
-from modules.crawling import get_contents
+from app.modules.bedrock import call_bedrock_api
+from app.modules.crawling import get_contents
 
 
 from app.routes.news import router as news_router
 from app.routes.source import router as source_router
 from app.routes.articles import router as articles_router
+from app.routes.scrap import router as scrap_router
+
 
 
 app = FastAPI(title="My API Service", version="1.0.0")
@@ -27,6 +29,7 @@ app.add_middleware(
 app.include_router(news_router)
 app.include_router(source_router)
 app.include_router(articles_router)
+app.include_router(scrap_router)
 
 
 # -------------------------------

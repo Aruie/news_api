@@ -1,4 +1,3 @@
-# modules/bedrock.py
 import boto3
 import json
 import re
@@ -44,16 +43,3 @@ def parse_bedrock_output(text: str):
     return title, article
 
 
-# ✅ 테스트 실행용
-if __name__ == '__main__':
-    test_prompt = """
-    다음 텍스트를 바탕으로 뉴스 형식으로 요약하고,
-    <Title> / <Article> 구조로 작성하세요.
-
-    내용: NCT가 새로운 앨범을 발표하며 팬들의 기대를 모으고 있다.
-    """
-    result = call_bedrock_api(test_prompt)
-    text = result["content"][0]["text"]
-    title, article = parse_bedrock_output(text)
-    print("📰 제목:", title)
-    print("📄 본문:", article)
