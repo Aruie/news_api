@@ -4,7 +4,8 @@ import uuid
 import requests
 import re
 from app.modules.bedrock import call_bedrock_api, parse_bedrock_output
-from app.modules.prompt_loader import load_prompt  # ✅ 프롬프트 로더 import
+from app.modules.prompt_loader import load_prompt  
+from app.modules.name_mapper import load_name_map_text
 from datetime import datetime
 
 router = APIRouter(prefix="/articles", tags=["Articles"])
@@ -57,16 +58,19 @@ def generate_news_from_article(article_id: str):
 
         # ✅ Bedrock 프롬프트 불러오기 (외부 텍스트 파일 기반)
         try:
-            template = load_prompt("generate_news")  # app/modules/prompts/generate_news.txt
+            template = load_prompt("generate_news") 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Prompt load failed: {e}")
 
+
+        name_map_text = load_name_map_text()
         # ✅ 템플릿 변수 치환
         prompt = (
             template
             .replace("{{content}}", article.get("content", ""))
             .replace("{{image_url}}", uploaded_s3_url or image_url or "")
             .replace("{{article_url}}", article.get("articleUrl", ""))
+            .replace("{{name_map}}", name_map_text)
         )
 
         # ✅ Bedrock 호출

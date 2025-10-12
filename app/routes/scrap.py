@@ -12,19 +12,39 @@ region = "us-east-1"
 dynamodb = boto3.resource("dynamodb", region_name=region)
 source_table = dynamodb.Table("SourceMetaTable")
 article_table = dynamodb.Table("ArticleTable")
+lock_table = dynamodb.Table("ScrapLockTable")  # ✅ 락용 테이블 추가 (PK: "scrap-lock")
 
 
 @router.post("/run")
 def run_scraper():
     """
-    ✅ 실시간 모니터링형 자동 수집기
+    ✅ 실시간 모니터링형 자동 수집기 (with DynamoDB Lock)
     - SourceMetaTable 기준으로 각 수집처 1회 스캔
     - 목록 selector / 본문 selector 둘 다 테이블에서 지정
     - 이미 등록된 URL은 제외
     - 신규 기사만 ArticleTable에 저장
     - 페이징 없음
+    - 중복 실행 방지 (DynamoDB Lock)
     """
+
+    # ✅ 1. 실행 중인지 확인
     try:
+        lock_item = lock_table.get_item(Key={"PK": "scrap-lock"}).get("Item")
+        if lock_item and lock_item.get("isRunning"):
+            raise HTTPException(status_code=409, detail="Scraper already running")
+
+        # ✅ 2. 락 설정
+        lock_table.put_item(
+            Item={
+                "PK": "scrap-lock",
+                "isRunning": True,
+                "startedAt": datetime.utcnow().isoformat(),
+            }
+        )
+
+        print("🚀 수집기 실행 시작")
+
+        # ✅ 3. 실제 수집 로직
         res = source_table.scan()
         sources = res.get("Items", [])
         if not sources:
@@ -93,7 +113,7 @@ def run_scraper():
                             "imageUrl": image_url,
                             "date": datetime.utcnow().isoformat(),
                             "category": category,
-                            "contentSelector": selector_content,  # ✅ 실제 적용된 selector 기록
+                            "contentSelector": selector_content,
                         }
                     )
 
@@ -124,6 +144,22 @@ def run_scraper():
             "summary": result_summary,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        # ✅ 4. 락 해제 (예외 발생 여부와 상관없이)
+        try:
+            lock_table.put_item(
+                Item={
+                    "PK": "scrap-lock",
+                    "isRunning": False,
+                    "finishedAt": datetime.utcnow().isoformat(),
+                }
+            )
+            print("✅ 락 해제 완료")
+        except Exception as unlock_err:
+            print(f"⚠️ 락 해제 실패: {unlock_err}")

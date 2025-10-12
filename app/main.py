@@ -13,6 +13,7 @@ from app.routes.news import router as news_router
 from app.routes.source import router as source_router
 from app.routes.articles import router as articles_router
 from app.routes.scrap import router as scrap_router
+from app.routes.name_map import router as name_router
 
 
 
@@ -20,16 +21,17 @@ app = FastAPI(title="My API Service", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],              # 허용할 Origin (예: ["http://localhost:5173"])
+    allow_origins=["*"],             
     allow_credentials=True,
-    allow_methods=["*"],              # GET, POST, PUT, DELETE 등 모두 허용
-    allow_headers=["*"],              # 모든 헤더 허용
+    allow_methods=["*"],             
+    allow_headers=["*"],             
 )
 
 app.include_router(news_router)
 app.include_router(source_router)
 app.include_router(articles_router)
 app.include_router(scrap_router)
+app.include_router(name_router)
 
 
 # -------------------------------

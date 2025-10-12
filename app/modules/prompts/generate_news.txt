@@ -1,5 +1,14 @@
-Below is the original news article (may be written in Korean).
+Below is the original news article.
 
+Refer to the following name mapping for translation consistency:
+-------------------------
+{{name_map}}
+-------------------------
+
+
+
+
+Original article content:
 -------------------------
 {{content}}
 -------------------------
