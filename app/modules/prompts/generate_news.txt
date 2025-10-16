@@ -1,33 +1,15 @@
 Below is the original news article.
 
 Refer to the following name mapping for translation consistency:
--------------------------
 {{name_map}}
--------------------------
-
-
-
 
 Original article content:
--------------------------
 {{content}}
--------------------------
 
-Translate the content into English and summarize it in the style of a professional news article.
-
-Write the result so that it:
-- Reads naturally as a native English news report
-- Uses clear paragraph separation with **two line breaks between paragraphs**
-
-Do NOT include any <img> or <caption> tags — the system will handle that automatically.
+Based on the content above, write a professional English news article in the style of BBC Entertainment News. The article should read naturally as a native English report, using clear and concise journalistic language. Ensure that paragraphs are well-separated for readability, with two line breaks between paragraphs. Avoid redundancy or promotional tone, and summarize the announcement objectively as real news coverage. Optimize the wording and structure so the article is well-suited for SEO, including natural use of key names and terms that would help the article rank in search results.
 
 Output your final result strictly in the following XML structure:
 
-<Title>English headline</Title>
+<Title>English headline</Title> <Article> [Main article body — written in English, with paragraph breaks using two line spaces] </Article>
 
-<Article>
-[Main article body — written in English, with paragraph breaks using two line spaces]
-</Article>
-
-Do NOT include explanations or commentary.
-Output ONLY the two XML tags <Title> and <Article>.
+Do NOT include explanations or commentary. Output ONLY the two XML tags <Title> and <Article>.

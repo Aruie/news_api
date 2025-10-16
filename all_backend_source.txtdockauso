@@ -1,0 +1,1207 @@
+./app/modules/crawling.py
+'''
+from bs4 import BeautifulSoup
+import requests
+from typing import List, Dict
+from urllib.parse import urlparse, urljoin, urlunparse
+
+def clean_html(soup: BeautifulSoup) -> str:
+    """
+    불필요한 속성(style, class, id 등) 제거 후 HTML 문자열로 반환
+    """
+    # 1️⃣ 불필요한 태그 자체 제거
+    for tag in soup(["script", "style", "noscript", "iframe"]):
+        tag.decompose()
+
+    # 2️⃣ 각 태그의 불필요한 속성 제거
+    for tag in soup.find_all(True):  # True → 모든 태그
+        allowed_attrs = {"href", "src", "alt"}  # 유지할 속성
+        attrs = dict(tag.attrs)
+        for attr in list(attrs.keys()):
+            if attr not in allowed_attrs:
+                del tag.attrs[attr]
+
+    # 3️⃣ 정돈된 HTML 반환
+    return str(soup)
+
+def normalize_url(base_url: str, link: str) -> str:
+    """
+    상대경로 → 절대경로 변환 후, 중복된 path 구간 정리
+    예: /ko/news/notice/ko/news/notice/5858 → /ko/news/notice/5858
+    """
+    # 1️⃣ 절대 URL로 변환
+    full_url = urljoin(base_url, link)
+
+    # 2️⃣ URL 파싱
+    parsed = urlparse(full_url)
+    path_parts = [p for p in parsed.path.split('/') if p]
+
+    # 3️⃣ 중복된 연속 패턴 제거
+    cleaned = []
+    for part in path_parts:
+        # 같은 구간이 연속으로 반복되면 하나만 유지
+        if len(cleaned) >= 2 and cleaned[-2:] == [part, part]:
+            continue
+        cleaned.append(part)
+
+    # 4️⃣ 중복 구간 (ex. /ko/news/notice/ko/news/notice/5858)
+    #    같은 패턴 반복시 앞부분만 유지
+    joined = '/'.join(cleaned)
+    while True:
+        half = joined[: len(joined)//2]
+        if half and joined.startswith(half + '/' + half):
+            joined = joined[len(half)+1:]
+        else:
+            break
+
+    new_path = '/' + joined
+
+    # 5️⃣ 다시 조립
+    normalized = urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        new_path,
+        parsed.params,
+        parsed.query,
+        parsed.fragment,
+    ))
+    return normalized
+
+
+def extract_links(url: str, selector: str, tag: str = "a", attr: str = "href") -> List[str]:
+    """
+    주어진 URL에서 특정 selector 하위의 tag에서 attr 속성들을 추출
+    
+    Args:
+        url (str): 크롤링할 페이지 URL
+        selector (str): CSS selector (예: "div.company-news", "div.news-list")
+        tag (str): 추출할 태그 이름 (기본값 "a")
+        attr (str): 추출할 속성 (기본값 "href")
+    
+    Returns:
+        List[str]: 추출된 (정규화된) URL 리스트
+    """
+    response = requests.get(url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    elements = soup.select(selector + f" {tag}")
+    if not elements:
+        raise ValueError(f"❌ extract_links: '{selector} {tag}' selector로 매칭된 요소가 없습니다. ({url})")
+
+    results = []
+    for el in elements:
+        raw_link = el.get(attr)
+        if not raw_link:
+            continue
+        normalized = normalize_url(url, raw_link)
+        results.append(normalized)
+
+    if not results:
+        raise ValueError(f"❌ extract_links: '{attr}' 속성이 존재하지 않습니다. ({url})")
+
+    return list(set(results))  # ✅ 중복 제거
+
+
+def get_contents(url: str, selector: str) -> Dict[str, List[Dict[str, str]]]:
+    """
+    지정된 CSS selector로 본문(html + 이미지) 추출 (스타일 제거 버전)
+    """
+    response = requests.get(url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    sections = soup.select(selector)
+    if not sections:
+        raise ValueError(f"❌ get_contents: selector '{selector}' 로 매칭된 요소가 없습니다. ({url})")
+
+    all_texts, all_images = [], []
+
+    for section in sections:
+        # 이미지 추출
+        for img in section.find_all("img"):
+            img_info = {"src": img.get("src"), "alt": img.get("alt", "")}
+            all_images.append(img_info)
+
+        # ✅ 스타일/클래스 등 속성 제거
+        clean_section_html = clean_html(section)
+
+        if clean_section_html.strip():
+            all_texts.append(clean_section_html)
+
+    text_with_tags = "\n".join(all_texts).strip()
+    if not text_with_tags:
+        raise ValueError(f"❌ get_contents: selector '{selector}' 내부에서 본문 텍스트를 추출하지 못했습니다. ({url})")
+
+    return {"html": text_with_tags, "images": all_images}
+'''
+
+./app/modules/prompt_loader.py
+'''
+import os
+
+PROMPT_DIR = os.path.join(os.path.dirname(__file__), "prompts")
+
+def load_prompt(name: str) -> str:
+    """
+    지정된 프롬프트 템플릿 파일을 로드
+    Args:
+        name (str): 파일명 (확장자 제외)
+    Returns:
+        str: 프롬프트 문자열
+    """
+    path = os.path.join(PROMPT_DIR, f"{name}.txt")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Prompt file not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+'''
+
+./app/modules/name_mapper.py
+'''
+import os
+
+NAME_MAP_FILE = os.path.join(os.path.dirname(__file__), "prompts", "name_map.txt")
+
+def load_name_map_text() -> str:
+    """
+    name_map.txt 파일의 원문을 그대로 불러옴.
+    (한글명|영문명|간단설명)
+    """
+    if not os.path.exists(NAME_MAP_FILE):
+        return ""
+    with open(NAME_MAP_FILE, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def append_name_entry(entry_line: str):
+    """
+    새 항목(한글명|영문명|간단설명)을 파일 맨 아래에 추가
+    """
+    with open(NAME_MAP_FILE, "a", encoding="utf-8") as f:
+        f.write("\n" + entry_line.strip())
+
+
+def overwrite_name_map(new_text: str):
+    """
+    전체 내용을 덮어쓰기 (파일 교체)
+    """
+    with open(NAME_MAP_FILE, "w", encoding="utf-8") as f:
+        f.write(new_text.strip())
+
+
+def delete_name_entry(korean_name: str):
+    """
+    특정 한글명으로 시작하는 라인 삭제
+    (한글명|... 형태에서 첫 번째 구분자 전까지 일치하는 라인을 제거)
+    """
+    if not os.path.exists(NAME_MAP_FILE):
+        raise FileNotFoundError("name_map.txt not found")
+
+    with open(NAME_MAP_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.split("|", 1)[0] == korean_name:
+            new_lines.append(stripped)
+
+    with open(NAME_MAP_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(new_lines))
+
+'''
+
+./app/modules/prompts/name_map.txt
+'''
+이병헌|Lee Byung-hun|BH Entertainment
+한효주|Han Hyo-joo|BH Entertainment
+김고은|Kim Go-eun|BH Entertainment
+박보영|Park Bo-young|BH Entertainment
+한지민|Han Ji-min|BH Entertainment
+
+공유|Gong Yoo|Management SOOP
+공효진|Gong Hyo-jin|Management SOOP
+배수지|Bae Suzy|Management SOOP
+최우식|Choi Woo-shik|Management SOOP
+정유미|Jung Yu-mi|Management SOOP
+남주혁|Nam Joo-hyuk|Management SOOP
+
+이정재|Lee Jung-jae|Artist Company
+정우성|Jung Woo-sung|Artist Company
+김윤석|Kim Yoon-seok|Artist Company
+
+현빈|Hyun Bin|VAST Entertainment
+
+손예진|Son Ye-jin|MSTEAM Entertainment
+이민정|Lee Min-jung|MSTEAM Entertainment
+위하준|Wi Ha-jun|MSTEAM Entertainment
+
+신민아|Shin Min-a|AM Entertainment
+김우빈|Kim Woo-bin|AM Entertainment
+
+김수현|Kim Soo-hyun|GOLDMEDALIST
+
+송중기|Song Joong-ki|HighZium Studio
+김지원|Kim Ji-won|HighZium Studio
+
+전지현|Jun Ji-hyun (Gianna Jun)|IEUM HASHTAG
+
+송혜교|Song Hye-kyo|UAA (United Artist Agency)
+
+박신혜|Park Shin-hye|SALT Entertainment
+김선호|Kim Seon-ho|SALT Entertainment
+
+박은빈|Park Eun-bin|Namoo Actors
+문근영|Moon Geun-young|Namoo Actors
+
+변요한|Byun Yo-han|Saram Entertainment
+박규영|Park Gyu-young|Saram Entertainment
+
+김태희|Kim Tae-hee|STORY J Company
+서인국|Seo In-guk|STORY J Company
+
+이제훈|Lee Je-hoon|COMPANY ON
+
+류준열|Ryu Jun-yeol|C-JeS Studio
+
+박보검|Park Bo-gum|THEBLACKLABEL
+'''
+
+./app/modules/prompts/generate_news.txt
+'''
+Below is the original news article.
+
+Refer to the following name mapping for translation consistency:
+-------------------------
+{{name_map}}
+-------------------------
+
+
+
+
+Original article content:
+-------------------------
+{{content}}
+-------------------------
+
+Translate the content into English and summarize it in the style of a professional news article.
+
+Write the result so that it:
+- Reads naturally as a native English news report
+- Uses clear paragraph separation with **two line breaks between paragraphs**
+
+Do NOT include any <img> or <caption> tags — the system will handle that automatically.
+
+Output your final result strictly in the following XML structure:
+
+<Title>English headline</Title>
+
+<Article>
+[Main article body — written in English, with paragraph breaks using two line spaces]
+</Article>
+
+Do NOT include explanations or commentary.
+Output ONLY the two XML tags <Title> and <Article>.
+
+'''
+
+./app/modules/bedrock.py
+'''
+import boto3
+import json
+import re
+
+# ✅ Bedrock 클라이언트
+client = boto3.client(
+    service_name="bedrock-runtime",
+    region_name="us-east-1"
+)
+
+model_ids = {
+    'haiku-3.5': 'arn:aws:bedrock:us-east-1:678005315499:inference-profile/us.anthropic.claude-3-5-haiku-20241022-v1:0'
+}
+
+
+def call_bedrock_api(prompt: str, model_name: str = 'haiku-3.5'):
+    """
+    Bedrock Claude 3.5 API 호출
+    """
+    response = client.invoke_model(
+        modelId=model_ids[model_name],
+        body=json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1000,
+            "temperature": 0.7,
+        }),
+        contentType="application/json",
+        accept="application/json"
+    )
+    result = json.loads(response["body"].read())
+    return result
+
+
+def parse_bedrock_output(text: str):
+    """
+    Claude 출력에서 <Title> / <Article> 태그 추출
+    """
+    title_match = re.search(r"<Title>(.*?)</Title>", text, re.DOTALL)
+    article_match = re.search(r"<Article>(.*?)</Article>", text, re.DOTALL)
+    title = title_match.group(1).strip() if title_match else ""
+    article = article_match.group(1).strip() if article_match else ""
+    return title, article
+
+
+
+'''
+
+./app/main.py
+'''
+# app.py
+from fastapi import FastAPI, Query
+from pydantic import BaseModel
+from typing import List, Optional
+from fastapi.middleware.cors import CORSMiddleware
+
+# 모듈 import
+from app.modules.bedrock import call_bedrock_api
+from app.modules.crawling import get_contents
+
+
+from app.routes.news import router as news_router
+from app.routes.source import router as source_router
+from app.routes.articles import router as articles_router
+from app.routes.scrap import router as scrap_router
+from app.routes.name_map import router as name_router
+
+
+
+app = FastAPI(title="My API Service", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],             
+    allow_credentials=True,
+    allow_methods=["*"],             
+    allow_headers=["*"],             
+)
+
+app.include_router(news_router)
+app.include_router(source_router)
+app.include_router(articles_router)
+app.include_router(scrap_router)
+app.include_router(name_router)
+
+
+# -------------------------------
+# Request/Response 모델 정의
+# -------------------------------
+
+class BedrockRequest(BaseModel):
+    prompt: str
+    messages: Optional[str] = None
+    model_name: str = "haiku-3.5"
+
+
+class BedrockResponse(BaseModel):
+    output: str
+    raw: dict
+
+
+class CrawlResponse(BaseModel):
+    html: str
+    images: List[dict]
+
+
+# -------------------------------
+# 엔드포인트 정의
+# -------------------------------
+
+@app.get("/")
+def root():
+    return {"message": "API is running!"}
+
+
+@app.post("/bedrock", response_model=BedrockResponse)
+def run_bedrock(req: BedrockRequest):
+    """Bedrock 모델 호출"""
+    result = call_bedrock_api(
+        prompt=req.prompt,
+        messages=req.messages or "",
+        model_name=req.model_name,
+    )
+
+    # Claude 계열 응답 파싱
+    try:
+        output_text = result["content"][0]["text"]
+    except Exception:
+        output_text = str(result)
+
+    return BedrockResponse(output=output_text, raw=result)
+
+
+@app.get("/crawl", response_model=CrawlResponse)
+def crawl_url(url: str = Query(..., description="크롤링할 URL"),
+              selector: str = Query("sm-section-inner", description="div selector class")):
+    """웹페이지에서 콘텐츠 추출"""
+    contents = get_contents(url, selector)
+    return CrawlResponse(**contents)
+
+
+
+'''
+
+./app/routes/news.py
+'''
+from fastapi import APIRouter, HTTPException
+import boto3
+from boto3.dynamodb.conditions import Attr
+
+from fastapi.responses import Response
+from datetime import datetime, timedelta, timezone
+import xml.etree.ElementTree as ET
+
+router = APIRouter(
+    prefix="/news",
+    tags=["News Articles"]
+)
+
+# ✅ us-east-1 리전 DynamoDB (현재 구조)
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+news_table = dynamodb.Table("NewsTable")
+
+
+@router.get("/category/{category}")
+def get_articles_by_category(category: str):
+    """
+    ✅ 카테고리별 뉴스 목록 (pubDate 내림차순 정렬)
+    """
+    try:
+        # GSI가 없기 때문에 scan + filter 사용
+        response = news_table.scan(
+            FilterExpression=Attr("category").eq(category)
+        )
+        items = response.get("Items", [])
+
+        # pubDate 기준 내림차순 정렬
+        items.sort(key=lambda x: x.get("pubDate", ""), reverse=True)
+
+        return items
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/article/{article_id}")
+def get_article_detail(article_id: str):
+    """
+    ✅ 단일 뉴스 상세 조회
+    """
+    try:
+        response = news_table.get_item(Key={"articleId": article_id})
+        if "Item" not in response:
+            raise HTTPException(status_code=404, detail=f"Article not found: {article_id}")
+        return response["Item"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+'''
+
+./app/routes/name_map.py
+'''
+from fastapi import APIRouter, HTTPException, Body
+from pydantic import BaseModel
+from app.modules.name_mapper import (
+    load_name_map_text,
+    append_name_entry,
+    overwrite_name_map,
+    delete_name_entry,
+)
+
+router = APIRouter(prefix="/name-map", tags=["Name Mapping"])
+
+class NameEntry(BaseModel):
+    korean: str
+    english: str
+    description: str = ""
+
+
+@router.get("")
+def get_all_lines():
+    """전체 name_map.txt 원문 반환"""
+    text = load_name_map_text()
+    return {"content": text}
+
+
+@router.post("")
+def add_new_entry(entry: NameEntry):
+    """새 항목 추가 (중복 허용)"""
+    line = f"{entry.korean}|{entry.english}|{entry.description}"
+    append_name_entry(line)
+    return {"message": "추가 완료", "entry": line}
+
+
+@router.put("")
+def overwrite_whole_file(content: str = Body(..., embed=False)):
+    """전체 파일 덮어쓰기"""
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="내용이 비어 있습니다.")
+    overwrite_name_map(content)
+    return {"message": "파일 전체 덮어쓰기 완료"}
+
+
+
+@router.delete("/{korean_name}")
+def delete_entry(korean_name: str):
+    """한글명 기준으로 해당 라인 삭제"""
+    try:
+        delete_name_entry(korean_name)
+        return {"message": f"'{korean_name}' 관련 항목 삭제 완료"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+'''
+
+./app/routes/source.py
+'''
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+import boto3
+from boto3.dynamodb.conditions import Attr
+import uuid
+
+router = APIRouter(prefix="/sources", tags=["Sources"])
+
+# DynamoDB
+region = "us-east-1"
+dynamodb = boto3.resource("dynamodb", region_name=region)
+source_table = dynamodb.Table("SourceMetaTable")
+article_table = dynamodb.Table("ArticleTable")
+
+
+# -------------------------------
+# ✅ Pydantic 모델
+# -------------------------------
+class SourceBase(BaseModel):
+    srcName: str
+    srcDescription: str
+    sourceUrl: str
+    selectorContainer: str
+    selectorItem: str
+    contentSelector: str  # ✅ 추가됨
+    category: str
+
+
+class SourceUpdate(SourceBase):
+    pass
+
+
+# -------------------------------
+# ✅ API 구현
+# -------------------------------
+
+@router.get("")
+def get_all_sources():
+    """모든 수집처 목록 조회"""
+    try:
+        res = source_table.scan()
+        return {"count": len(res["Items"]), "items": res["Items"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{source_id}")
+def get_source(source_id: str):
+    """단일 수집처 조회"""
+    try:
+        res = source_table.get_item(Key={"sourceId": source_id})
+        if "Item" not in res:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return res["Item"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("")
+def create_source(src: SourceBase):
+    """새로운 수집처 추가"""
+    try:
+        source_id = f"SRC-{uuid.uuid4().hex[:8]}"
+
+        item = {
+            "sourceId": source_id,
+            "srcName": src.srcName,
+            "srcDescription": src.srcDescription,
+            "sourceUrl": src.sourceUrl,
+            "selectorContainer": src.selectorContainer,
+            "selectorItem": src.selectorItem,
+            "contentSelector": src.contentSelector,  # ✅ 추가됨
+            "category": src.category,
+        }
+
+        source_table.put_item(Item=item)
+        return {"message": "Created successfully", "sourceId": source_id}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{source_id}")
+def update_source(source_id: str, data: SourceUpdate):
+    """기존 수집처 정보 수정"""
+    try:
+        update_expr = """
+        SET srcName=:n,
+            srcDescription=:d,
+            sourceUrl=:u,
+            selectorContainer=:c,
+            selectorItem=:i,
+            contentSelector=:s,
+            category=:g
+        """
+
+        values = {
+            ":n": data.srcName,
+            ":d": data.srcDescription,
+            ":u": data.sourceUrl,
+            ":c": data.selectorContainer,
+            ":i": data.selectorItem,
+            ":s": data.contentSelector,  # ✅ 추가됨
+            ":g": data.category,
+        }
+
+        source_table.update_item(
+            Key={"sourceId": source_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=values,
+        )
+
+        return {"message": "Updated successfully", "sourceId": source_id}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{source_id}")
+def delete_source(source_id: str):
+    """수집처 삭제"""
+    try:
+        source_table.delete_item(Key={"sourceId": source_id})
+        return {"message": "Deleted successfully", "sourceId": source_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{source_id}/articles")
+def get_articles_by_source(source_id: str):
+    """특정 수집처의 기사 목록 조회"""
+    try:
+        res = article_table.scan(FilterExpression=Attr("sourceId").eq(source_id))
+        items = res.get("Items", [])
+        return {"count": len(items), "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+'''
+
+./app/routes/scrap.py
+'''
+from fastapi import APIRouter, HTTPException
+from datetime import datetime
+import boto3
+import uuid
+import traceback
+from app.modules.crawling import extract_links, get_contents
+
+router = APIRouter(prefix="/scrap", tags=["Scraper"])
+
+# DynamoDB
+region = "us-east-1"
+dynamodb = boto3.resource("dynamodb", region_name=region)
+source_table = dynamodb.Table("SourceMetaTable")
+article_table = dynamodb.Table("ArticleTable")
+lock_table = dynamodb.Table("ScrapLockTable")  # ✅ 락용 테이블 추가 (PK: "scrap-lock")
+
+
+@router.post("/run")
+def run_scraper():
+    """
+    ✅ 실시간 모니터링형 자동 수집기 (with DynamoDB Lock)
+    - SourceMetaTable 기준으로 각 수집처 1회 스캔
+    - 목록 selector / 본문 selector 둘 다 테이블에서 지정
+    - 이미 등록된 URL은 제외
+    - 신규 기사만 ArticleTable에 저장
+    - 페이징 없음
+    - 중복 실행 방지 (DynamoDB Lock)
+    """
+
+    # ✅ 1. 실행 중인지 확인
+    try:
+        lock_item = lock_table.get_item(Key={"PK": "scrap-lock"}).get("Item")
+        if lock_item and lock_item.get("isRunning"):
+            raise HTTPException(status_code=409, detail="Scraper already running")
+
+        # ✅ 2. 락 설정
+        lock_table.put_item(
+            Item={
+                "PK": "scrap-lock",
+                "isRunning": True,
+                "startedAt": datetime.utcnow().isoformat(),
+            }
+        )
+
+        print("🚀 수집기 실행 시작")
+
+        # ✅ 3. 실제 수집 로직
+        res = source_table.scan()
+        sources = res.get("Items", [])
+        if not sources:
+            raise HTTPException(status_code=404, detail="No sources found")
+
+        total_new = 0
+        total_skipped = 0
+        total_failed = 0
+        result_summary = []
+
+        for src in sources:
+            src_id = src["sourceId"]
+            src_name = src["srcName"]
+            base_url = src["sourceUrl"]
+            selector_container = src.get("selectorContainer")
+            selector_item = src.get("selectorItem", "a")
+            selector_content = src.get("contentSelector")
+            category = src.get("category", "General")
+
+            print(f"🕷️ {src_name} ({src_id}) → {base_url}")
+
+            try:
+                links = extract_links(base_url, selector_container, selector_item)
+            except Exception as e:
+                print(f"⚠️ [{src_name}] 링크 추출 실패: {e}")
+                total_failed += 1
+                continue
+
+            new_count = 0
+            skip_count = 0
+            fail_count = 0
+
+            for link in links:
+                # URL 정규화
+                if link.startswith("/"):
+                    full_url = base_url.rstrip("/") + link
+                elif link.startswith("http"):
+                    full_url = link
+                else:
+                    full_url = f"{base_url.rstrip('/')}/{link}"
+
+                # 중복 확인
+                exists = article_table.scan(
+                    FilterExpression="articleUrl = :u",
+                    ExpressionAttributeValues={":u": full_url}
+                )
+                if exists.get("Items"):
+                    skip_count += 1
+                    continue
+
+                try:
+                    # ✅ 본문 selector를 동적으로 전달
+                    data = get_contents(full_url, selector_content)
+                    html = data.get("html", "")
+                    imgs = data.get("images", [])
+                    image_url = imgs[0]["src"] if imgs else None
+
+                    article_id = f"{src_id}-{uuid.uuid4().hex[:8]}"
+
+                    article_table.put_item(
+                        Item={
+                            "articleId": article_id,
+                            "sourceId": src_id,
+                            "articleUrl": full_url,
+                            "content": html,
+                            "imageUrl": image_url,
+                            "date": datetime.utcnow().isoformat(),
+                            "category": category,
+                            "contentSelector": selector_content,
+                        }
+                    )
+
+                    new_count += 1
+                    total_new += 1
+
+                except Exception as e:
+                    print(f"⚠️ [{src_name}] {full_url} 수집 실패: {e}")
+                    fail_count += 1
+                    total_failed += 1
+
+            result_summary.append({
+                "sourceId": src_id,
+                "sourceName": src_name,
+                "checkedLinks": len(links),
+                "newArticles": new_count,
+                "skipped": skip_count,
+                "failed": fail_count,
+            })
+            total_skipped += skip_count
+
+        return {
+            "status": "ok",
+            "timestamp": datetime.utcnow().isoformat(),
+            "totalNew": total_new,
+            "totalSkipped": total_skipped,
+            "totalFailed": total_failed,
+            "summary": result_summary,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        # ✅ 4. 락 해제 (예외 발생 여부와 상관없이)
+        try:
+            lock_table.put_item(
+                Item={
+                    "PK": "scrap-lock",
+                    "isRunning": False,
+                    "finishedAt": datetime.utcnow().isoformat(),
+                }
+            )
+            print("✅ 락 해제 완료")
+        except Exception as unlock_err:
+            print(f"⚠️ 락 해제 실패: {unlock_err}")
+
+'''
+
+./app/routes/articles.py
+'''
+from fastapi import APIRouter, HTTPException
+import boto3
+import uuid
+import requests
+import re
+from app.modules.bedrock import call_bedrock_api, parse_bedrock_output
+from app.modules.prompt_loader import load_prompt  
+from app.modules.name_mapper import load_name_map_text
+
+from fastapi.responses import Response
+from datetime import datetime, timedelta, timezone
+import xml.etree.ElementTree as ET
+
+router = APIRouter(prefix="/articles", tags=["Articles"])
+
+# ✅ AWS 리소스
+region = "us-east-1"
+dynamodb = boto3.resource("dynamodb", region_name=region)
+s3 = boto3.client("s3", region_name=region)
+
+article_table = dynamodb.Table("ArticleTable")
+news_table = dynamodb.Table("NewsTable")
+
+# ✅ 업로드할 S3 버킷명
+TARGET_BUCKET = "sayart-news-thumbnails"
+
+
+@router.post("/generate-news/{article_id}")
+def generate_news_from_article(article_id: str):
+    """기사 기반으로 뉴스 생성 + 이미지 S3 업로드 후 본문 삽입"""
+    try:
+        print(article_id)
+        res = article_table.get_item(Key={"articleId": article_id})
+        if "Item" not in res:
+            raise HTTPException(status_code=404, detail="Article not found")
+        article = res["Item"]
+
+        # 이미 생성된 뉴스가 있으면 중복 방지
+        if article.get("generatedNewsId"):
+            return {"message": "Already generated", "newsId": article["generatedNewsId"]}
+
+        category = article.get("category")
+        if not category:
+            raise HTTPException(status_code=400, detail="Missing category info")
+
+        image_url = article.get("imageUrl")
+
+
+        # 프롬프트 불러오기
+        try:
+            template = load_prompt("generate_news") 
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Prompt load failed: {e}")
+
+
+        name_map_text = load_name_map_text()
+        # ✅ 템플릿 변수 치환
+        prompt = (
+            template
+            .replace("{{content}}", article.get("content", ""))
+            .replace("{{image_url}}", image_url or "")
+            .replace("{{article_url}}", article.get("articleUrl", ""))
+            .replace("{{name_map}}", name_map_text)
+        )
+
+        # ✅ Bedrock 호출
+        result = call_bedrock_api(prompt=prompt, model_name="haiku-3.5")
+        text = result["content"][0]["text"] if "content" in result else str(result)
+        title, description = parse_bedrock_output(text)
+        
+        
+
+        if not title or not description:
+            raise HTTPException(status_code=500, detail="Bedrock output parsing failed")
+        
+        description = re.sub(r'\n{2,}', '</p><p>', description.strip())
+        description = f"<p>{description}</p>"
+
+
+        # ✅ 새 뉴스 생성
+        new_id = str(uuid.uuid4())[:8]
+        now = datetime.utcnow().isoformat()
+
+        news_table.put_item(
+            Item={
+                "articleId": new_id,
+                "title": title,
+                "description": description,
+                "sourceArticleId": article_id,
+                "category": category,
+                "pubDate": now,
+                "author": "System",
+                "imageUrl": image_url,
+            }
+        )
+
+        # ✅ ArticleTable에 generatedNewsId 업데이트
+        article_table.update_item(
+            Key={"articleId": article_id},
+            UpdateExpression="SET generatedNewsId = :nid",
+            ExpressionAttributeValues={":nid": new_id},
+        )
+
+        return {
+            "message": "Generated successfully",
+            "id": new_id,
+            "title": title,
+            "description": description,
+            "category": category,
+            "imageUrl": image_url,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/generate-batch")
+def generate_all_unprocessed_articles():
+    """
+    아직 뉴스가 생성되지 않은 기사들(generateFlag=0)을 모두 생성
+    """
+    try:
+        # 1️⃣ generateFlag == 0 인 기사 목록 조회
+        res = article_table.scan(
+            FilterExpression="attribute_not_exists(generateFlag) OR generateFlag = :flag",
+            ExpressionAttributeValues={":flag": 0}
+        )
+        articles = res.get("Items", [])
+        if not articles:
+            return {"message": "생성할 신규 기사 없음", "count": 0}
+
+        total_success = 0
+        total_fail = 0
+        results = []
+
+        for article in articles:
+            article_id = article["articleId"]
+
+            try:
+                # 기존 단일 생성 로직 재사용
+                sub_res = generate_news_from_article(article_id)
+
+                # 성공 시 플래그 1로 업데이트
+                article_table.update_item(
+                    Key={"articleId": article_id},
+                    UpdateExpression="SET generateFlag = :f, generateError = :e",
+                    ExpressionAttributeValues={
+                        ":f": 1,
+                        ":e": "SUCCESS"
+                    }
+                )
+
+                total_success += 1
+                results.append({"articleId": article_id, "status": "✅ success"})
+
+            except Exception as e:
+                # 실패 시 플래그 2 및 오류내용 기록
+                article_table.update_item(
+                    Key={"articleId": article_id},
+                    UpdateExpression="SET generateFlag = :f, generateError = :e",
+                    ExpressionAttributeValues={
+                        ":f": 2,
+                        ":e": str(e)
+                    }
+                )
+
+                total_fail += 1
+                results.append({"articleId": article_id, "status": f"❌ failed: {e}"})
+
+        return {
+            "message": "Batch generation completed",
+            "totalSuccess": total_success,
+            "totalFail": total_fail,
+            "processed": len(articles),
+            "results": results
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rss/generated")
+def generate_and_upload_rss_to_s3():
+    """
+    ✅ 오늘 생성된 뉴스 기반 RSS XML 생성 → S3 업로드 (퍼블릭)
+    (xml.etree.ElementTree → xml.dom.minidom 기반으로 교체하여 진짜 CDATA 적용)
+    """
+    try:
+        from xml.dom.minidom import Document
+
+        KST = timezone(timedelta(hours=9))
+        now_kst = datetime.now(KST)
+        today_kst_str = now_kst.strftime("%Y-%m-%d")
+
+        # 1️⃣ DynamoDB 뉴스 스캔
+        res = news_table.scan()
+        items = res.get("Items", [])
+
+        # 2️⃣ 오늘 생성된 뉴스만 필터링
+        recent_items = []
+        for item in items:
+            pub_date_str = item.get("pubDate", "")
+            if not pub_date_str:
+                continue
+            try:
+                pub_dt = datetime.fromisoformat(pub_date_str.replace("Z", "+00:00")).astimezone(KST)
+                if pub_dt.strftime("%Y-%m-%d") == today_kst_str:
+                    recent_items.append(item)
+            except Exception:
+                continue
+
+        # 3️⃣ 최신순 정렬 + 최대 100개
+        recent_items.sort(key=lambda x: x.get("pubDate", ""), reverse=True)
+        recent_items = recent_items[:100]
+
+        # 4️⃣ DOM 기반 RSS XML 생성
+        doc = Document()
+
+        rss = doc.createElement("rss")
+        rss.setAttribute("xmlns:atom", "http://www.w3.org/2005/Atom")
+        rss.setAttribute("xmlns:art", "http://artnews.local/rss")
+        rss.setAttribute("version", "2.0")
+        doc.appendChild(rss)
+
+        # script = doc.createElement("script")
+        # rss.appendChild(script)
+
+        channel = doc.createElement("channel")
+        rss.appendChild(channel)
+
+        def add_text(tag, text):
+            el = doc.createElement(tag)
+            el.appendChild(doc.createTextNode(text))
+            channel.appendChild(el)
+            return el
+
+        add_text("title", "ArtNews Recent Articles")
+        add_text("link", "http://cc.xxq.me/art_news/rss.xml")
+        add_text("description", "오늘 생성된 아트 기사 목록")
+        add_text("language", "ko")
+
+        pub_str = now_kst.strftime("%a, %d %b %Y %H:%M:%S +0900")
+        add_text("pubDate", pub_str)
+        add_text("lastBuildDate", pub_str)
+
+        atom_link = doc.createElement("atom:link")
+        atom_link.setAttribute("href", "http://cc.xxq.me/art_news/rss.xml")
+        atom_link.setAttribute("rel", "self")
+        atom_link.setAttribute("type", "application/rss+xml")
+        channel.appendChild(atom_link)
+
+
+        byline = '''\n\nSayArt / Sayart Teams'''
+
+
+        # 5️⃣ 아이템 루프
+        for item in recent_items:
+            item_el = doc.createElement("item")
+            channel.appendChild(item_el)
+
+            # 진짜 CDATA 블록 생성
+            def add_cdata(tag, text):
+                el = doc.createElement(tag)
+                el.appendChild(doc.createCDATASection(text))
+                item_el.appendChild(el)
+
+            add_cdata("title", item.get("title", "Untitled"))
+            link_el = doc.createElement("link")
+            link_el.appendChild(doc.createTextNode(item.get("articleUrl", "")))
+            item_el.appendChild(link_el)
+            add_cdata("description", item.get("description", "") + byline)
+            add_cdata("category", item.get("category", "general"))
+
+            # articleId (namespace 포함)
+            art_id = doc.createElement("art:articleId")
+            art_id.appendChild(doc.createTextNode(str(item.get("articleId", ""))))
+            item_el.appendChild(art_id)
+
+            # imageUrl (첫 번째 이미지만)
+            if item.get("imageUrl"):
+                img_el = doc.createElement("imageUrl")
+                img_el.appendChild(doc.createTextNode(item["imageUrl"]))
+                item_el.appendChild(img_el)
+
+            # pubDate (RFC 형식 변환)
+            pub_dt = datetime.fromisoformat(
+                item.get("pubDate", now_kst.isoformat())
+            ).astimezone(KST)
+            pub_date_str = pub_dt.strftime("%a, %d %b %Y %H:%M:%S +0900")
+            pub_el = doc.createElement("pubDate")
+            pub_el.appendChild(doc.createTextNode(pub_date_str))
+            item_el.appendChild(pub_el)
+
+        # 6️⃣ XML 문자열 직렬화 (UTF-8)
+        xml_bytes = doc.toprettyxml(indent="  ", encoding="utf-8")
+        
+        # BOM 추가
+        BOM = b'\xef\xbb\xbf'
+        xml_bytes = BOM + xml_bytes
+
+        # 7️⃣ S3 업로드 (퍼블릭)
+        file_name = f"rss/ArtNews_{today_kst_str}.xml"
+        s3.put_object(
+            Bucket=TARGET_BUCKET,
+            Key=file_name,
+            Body=xml_bytes,
+            ContentType="application/rss+xml; charset=utf-8",
+        )
+
+        public_url = f"https://{TARGET_BUCKET}.s3.amazonaws.com/{file_name}"
+
+        # ✅ 반환: RSS 업로드 정보만
+        return {
+            "message": "RSS generated and uploaded successfully",
+            "itemCount": len(recent_items),
+            "rssFile": file_name,
+            "rssUrl": public_url,
+            "generatedAt": pub_str,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+'''
+

@@ -1,3 +1,5 @@
 .venv
 all_backend_source.txt
+*__pycache__/*
 __pycache__/*
+*.pyc

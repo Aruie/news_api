@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 import boto3
 from boto3.dynamodb.conditions import Attr
+import xml.etree.ElementTree as ET
 
 router = APIRouter(
     prefix="/news",

@@ -102,7 +102,7 @@ def run_scraper():
                     imgs = data.get("images", [])
                     image_url = imgs[0]["src"] if imgs else None
 
-                    article_id = f"{src_id}-{uuid.uuid4().hex[:8]}"
+                    article_id = f"{src_id}-{uuid.uuid4().hex[:10]}"
 
                     article_table.put_item(
                         Item={
